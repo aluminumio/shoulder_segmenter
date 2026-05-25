@@ -1,0 +1,12 @@
+# Phase 2 export script dependencies. Pinned for reproducibility.
+# Use `python3 -m venv .venv && source .venv/bin/activate && pip install -r script/requirements.txt`.
+# Matched to the libtorch shipped in homebrew's `pytorch` formula
+# (and to torch-rb 0.24.0's expected ABI).
+torch==2.12.0
+numpy>=2.0
+pyyaml>=6.0
+# TotalSegmentator + nnUNetv2 — installed only when running the *real* trace.
+# Leave commented for the Phase 2 stub trace (small proxy CNN) so CI/local dev
+# doesn't pay the 1+ GB download.
+# totalsegmentator==2.4.0
+# nnunetv2==2.5.1

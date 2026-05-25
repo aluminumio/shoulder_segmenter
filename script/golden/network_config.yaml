@@ -1,0 +1,47 @@
+patch_size:
+- 8
+- 16
+- 16
+target_spacing:
+- 1.5
+- 1.5
+- 1.5
+num_classes: 25
+labels:
+  0: background
+  1: humerus_left
+  2: humerus_right
+  3: scapula_left
+  4: scapula_right
+  5: clavicle_left
+  6: clavicle_right
+  7: sternum
+  8: sacrum
+  9: hip_left
+  10: hip_right
+  11: femur_left
+  12: femur_right
+  13: vertebrae_L5
+  14: vertebrae_L4
+  15: vertebrae_L3
+  16: vertebrae_L2
+  17: vertebrae_L1
+  18: vertebrae_T12
+  19: vertebrae_T11
+  20: vertebrae_T10
+  21: vertebrae_T9
+  22: vertebrae_C7
+  23: rib_left_1
+  24: rib_right_1
+normalization:
+  clip_min: -1024.0
+  clip_max: 1024.0
+  mean: 100.0
+  std: 300.0
+model_filename: totalsegmentator_bones_fast.pt
+model_sha256: 931be816374337e606f1a5d9d5d3cca2911f9031fb3092f0829c4a373f3366e5
+model_url: https://github.com/aluminumio/shoulder_segmenter/releases/download/v0.0.1/totalsegmentator_bones_fast.pt
+export_kind: proxy_cnn
+patch_layout: DHW
+tensor_layout: BCDHW
+note: Proxy CNN for Phase 2. Replace with real nnU-Net mirror in Phase 3.

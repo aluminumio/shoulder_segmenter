@@ -1,0 +1,27 @@
+*.gem
+*.rbc
+.bundle/
+.config/
+.yardoc
+Gemfile.lock
+InstalledFiles
+_yardoc
+coverage/
+doc/
+lib/bundler/man/
+pkg/
+rdoc/
+spec/reports/
+test/tmp/
+test/version_tmp/
+tmp/
+.rspec_status
+.venv/
+__pycache__/
+*.pyc
+
+# Traced model weights — too big to commit; downloaded from GH releases on first use
+script/*.pt
+script/golden/*.bin
+spec/fixtures/*.pt
+~/.cache/shoulder_segmenter/
