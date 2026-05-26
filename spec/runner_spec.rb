@@ -5,15 +5,21 @@ require "nifti"
 
 RSpec.describe ShoulderSegmenter::Runner do
   before do
-    skip "run script/export_totalsegmentator.py first" unless golden_artifacts_available?
+    skip "run script/export_totalsegmentator.py --inspect first" \
+      unless golden_artifacts_available?
     skip "nifti-ruby missing" unless defined?(Nifti)
   end
 
-  # Phase 2 Tier B is *deferred*: end-to-end bit-equivalence against a Python
-  # TotalSegmentator reference requires the real nnU-Net mirror (Phase 3).
-  # Until then, the most we can prove here is that the orchestration runs
-  # end-to-end on a NIfTI fixture without exploding, and that the output
-  # geometry matches the input.
+  # Tier B: orchestration smoke test against the real model.
+  #
+  # We run the full pipeline (preprocess → resample → sliding window → label
+  # map) on a synthetic 16x16x16 NIfTI fixture. The output is biologically
+  # meaningless on synthetic noise — virtually every voxel should land on
+  # the background class — but the spec verifies the geometry stays consistent
+  # end-to-end and nothing along the way crashes.
+  #
+  # The sliding window pads the tiny fixture up to the model's patch size
+  # (112x112x128), so this exercises exactly one forward pass.
   it "runs end-to-end against the NIfTI fixture from nifti-ruby" do
     nifti_fixture = File.expand_path("../../nifti-ruby/spec/fixtures/synthetic_16x16x16_uint8.nii.gz", __dir__)
     skip "missing #{nifti_fixture}" unless File.exist?(nifti_fixture)

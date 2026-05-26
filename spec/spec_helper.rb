@@ -28,6 +28,7 @@ module SpecPaths
 
   def golden_artifacts_available?
     File.exist?(golden("network_config.yaml")) &&
+      File.exist?(golden("nnunet_architecture.yaml")) &&
       File.exist?(golden("sample_patch_in.bin")) &&
       File.exist?(golden("sample_patch_out.bin")) &&
       File.exist?(model_weights_path)

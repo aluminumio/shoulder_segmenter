@@ -1,0 +1,79 @@
+class_name: dynamic_network_architectures.architectures.unet.PlainConvUNet
+n_stages: 5
+features_per_stage:
+- 32
+- 64
+- 128
+- 256
+- 320
+kernel_sizes:
+- - 3
+  - 3
+  - 3
+- - 3
+  - 3
+  - 3
+- - 3
+  - 3
+  - 3
+- - 3
+  - 3
+  - 3
+- - 3
+  - 3
+  - 3
+strides:
+- - 1
+  - 1
+  - 1
+- - 2
+  - 2
+  - 2
+- - 2
+  - 2
+  - 2
+- - 2
+  - 2
+  - 2
+- - 2
+  - 2
+  - 2
+n_conv_per_stage:
+- 2
+- 2
+- 2
+- 2
+- 2
+n_conv_per_stage_decoder:
+- 2
+- 2
+- 2
+- 2
+conv_bias: true
+norm_op: torch.nn.modules.instancenorm.InstanceNorm3d
+norm_op_kwargs:
+  eps: 1.0e-05
+  affine: true
+nonlin: torch.nn.LeakyReLU
+nonlin_kwargs:
+  inplace: true
+input_channels: 1
+output_channels: 118
+patch_size:
+- 112
+- 112
+- 128
+golden_patch:
+- 32
+- 32
+- 32
+target_spacing:
+- 3.0
+- 3.0
+- 3.0
+normalization:
+  scheme: CTNormalization
+  clip_min: -1004.0
+  clip_max: 1588.0
+  mean: -50.38697721419439
+  std: 503.39235619144

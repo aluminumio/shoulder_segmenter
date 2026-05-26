@@ -5,15 +5,12 @@ require "numo/narray"
 module ShoulderSegmenter
   # nnU-Net-style 3-D sliding-window inference with Gaussian importance blending.
   #
-  # 1. Pad the volume so each spatial dim >= patch_size (reflect padding).
+  # 1. Reflect-pad the volume so each spatial dim >= patch_size.
   # 2. Step through with stride = floor(patch_size * (1 - overlap)) (default 0.5).
   # 3. For each patch, run model.forward → logits [1,K,D,H,W].
   # 4. Multiply by a 3-D Gaussian importance map (sigma = patch_size / 8) and
   #    accumulate into a logit volume + weight volume.
   # 5. logits / weights, argmax over K, crop pad → final label volume.
-  #
-  # Phase 2: returns the same shape as input; resampling-back-to-input-spacing
-  # is the caller's job (or another TODO).
   module SlidingWindow
     module_function
 
@@ -22,11 +19,12 @@ module ShoulderSegmenter
 
     def gaussian_importance_map(patch_size)
       sigmas = patch_size.map { |s| s * GAUSSIAN_SIGMA_SCALE }
-      # Separable Gaussian: outer-product of three 1-D Gaussians.
       gz = gaussian_1d(patch_size[0], sigmas[0])
       gy = gaussian_1d(patch_size[1], sigmas[1])
       gx = gaussian_1d(patch_size[2], sigmas[2])
-      g = gz.reshape(patch_size[0], 1, 1) * gy.reshape(1, patch_size[1], 1) * gx.reshape(1, 1, patch_size[2])
+      g = gz.reshape(patch_size[0], 1, 1) *
+          gy.reshape(1, patch_size[1], 1) *
+          gx.reshape(1, 1, patch_size[2])
       g / g.max
     end
 
@@ -42,18 +40,16 @@ module ShoulderSegmenter
     def run(volume, model:)
       require "torch"
       patch_size = Array(model.config.patch_size)
-      shape      = volume.shape
+      orig_shape = volume.shape
 
-      # Pad each dim up to at least patch_size (mirror pad) — keep originals for crop.
-      padded, pads = pad_to(volume, patch_size)
-
+      padded, _pads = reflect_pad_to(volume, patch_size)
       pd, ph, pw = padded.shape
       sz, sy, sx = strides(patch_size)
 
-      k         = model.config.num_classes
-      logits    = Numo::SFloat.zeros(k, pd, ph, pw)
-      weights   = Numo::SFloat.zeros(pd, ph, pw)
-      gmap      = gaussian_importance_map(patch_size)
+      k       = model.config.num_classes
+      logits  = Numo::SFloat.zeros(k, pd, ph, pw)
+      weights = Numo::SFloat.zeros(pd, ph, pw)
+      gmap    = gaussian_importance_map(patch_size)
 
       starts_d = patch_starts(pd, patch_size[0], sz)
       starts_h = patch_starts(ph, patch_size[1], sy)
@@ -67,8 +63,8 @@ module ShoulderSegmenter
             x1 = x0 + patch_size[2]
 
             patch = padded[z0...z1, y0...y1, x0...x1]
-            out   = model.forward(patch) # Torch [1,K,D,H,W]
-            out_arr = out.squeeze(0).numo # [K,D,H,W] Numo::SFloat
+            out   = model.forward(patch)              # [1,K,D,H,W]
+            out_arr = out.squeeze(0).numo             # [K,D,H,W] Numo::SFloat
 
             k.times do |c|
               logits[c, z0...z1, y0...y1, x0...x1] += out_arr[c, true, true, true] * gmap
@@ -78,15 +74,18 @@ module ShoulderSegmenter
         end
       end
 
-      # Normalize, argmax, crop pad.
-      weights_safe = weights + 1e-8
-      # broadcast normalization: logits[:, z, y, x] / weights[z,y,x]
-      k.times { |c| logits[c, true, true, true] = logits[c, true, true, true] / weights_safe }
-      labels_padded = logits.max_index(axis: 0) % k # argmax along channel
-      # max_index returns flat indices; we used axis: 0 which is the channel axis.
-      # For NArray, max_index(axis: 0) returns indices within the reduced axis dimension already.
+      labels_padded = argmax_channel(logits)
+      crop(labels_padded, orig_shape).cast_to(Numo::UInt8)
+    end
 
-      crop(labels_padded, pads, shape).cast_to(Numo::UInt8)
+    # Argmax along the channel (axis 0) of a [K, D, H, W] SFloat. Numo's
+    # `max_index(axis: 0)` returns **flat** indices into the source array, not
+    # per-axis indices, so divide by the per-axis-0 stride (D*H*W) to recover
+    # the channel id.
+    def argmax_channel(logits)
+      _k, d, h, w = logits.shape
+      flat = logits.max_index(axis: 0)
+      flat / (d * h * w)
     end
 
     def strides(patch_size)
@@ -101,21 +100,56 @@ module ShoulderSegmenter
       starts.uniq
     end
 
-    # Reflect-pad volume up to at least patch_size in every dim.
-    def pad_to(arr, patch_size)
+    # Reflect-pad volume up to at least patch_size in every dim. This mirrors
+    # nnU-Net's preprocessing (and avoids the dark zero-band that biases the
+    # CT-normalized voxel statistics inside InstanceNorm at the boundary).
+    def reflect_pad_to(arr, patch_size)
       d, h, w = arr.shape
-      pd = [patch_size[0] - d, 0].max
-      ph = [patch_size[1] - h, 0].max
-      pw = [patch_size[2] - w, 0].max
-      return [arr, [0, 0, 0]] if pd.zero? && ph.zero? && pw.zero?
+      pad_d = [patch_size[0] - d, 0].max
+      pad_h = [patch_size[1] - h, 0].max
+      pad_w = [patch_size[2] - w, 0].max
+      return [arr, [0, 0, 0]] if pad_d.zero? && pad_h.zero? && pad_w.zero?
 
-      # Simple zero pad (TODO Phase 3: reflect pad matching nnU-Net exactly).
-      padded = Numo::SFloat.zeros(d + pd, h + ph, w + pw)
-      padded[0...d, 0...h, 0...w] = arr
-      [padded, [pd, ph, pw]]
+      [reflect_pad_3d(arr, pad_d, pad_h, pad_w), [pad_d, pad_h, pad_w]]
     end
 
-    def crop(arr, _pads, original_shape)
+    # Edge-of-axis reflect: post-pad only (we never crop from the front, so we
+    # only need to reflect the tail). For axis dim d, indices d..(d+pad-1)
+    # reflect back into the volume as d-2, d-3, ….
+    def reflect_pad_3d(arr, pad_d, pad_h, pad_w)
+      d, h, w = arr.shape
+      out = Numo::SFloat.zeros(d + pad_d, h + pad_h, w + pad_w)
+      out[0...d, 0...h, 0...w] = arr
+
+      # Reflect along d
+      pad_d.times do |i|
+        src = (d - 2 - i) % d
+        out[d + i, 0...h, 0...w] = arr[src, true, true]
+      end if pad_d.positive?
+
+      # Reflect along h (across the already-d-extended volume)
+      if pad_h.positive?
+        ext_d = d + pad_d
+        pad_h.times do |i|
+          src = (h - 2 - i) % h
+          out[0...ext_d, h + i, 0...w] = out[0...ext_d, src, 0...w]
+        end
+      end
+
+      # Reflect along w
+      if pad_w.positive?
+        ext_d = d + pad_d
+        ext_h = h + pad_h
+        pad_w.times do |i|
+          src = (w - 2 - i) % w
+          out[0...ext_d, 0...ext_h, w + i] = out[0...ext_d, 0...ext_h, src]
+        end
+      end
+
+      out
+    end
+
+    def crop(arr, original_shape)
       d, h, w = original_shape
       arr[0...d, 0...h, 0...w]
     end

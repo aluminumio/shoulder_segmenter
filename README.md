@@ -2,23 +2,21 @@
 
 Ruby segmentation of bones from CT volumes via libtorch.
 
-A 1:1 port (in progress) of [TotalSegmentator](https://github.com/wasserth/TotalSegmentator)'s `bones` task — the nnU-Net "fast" model that labels 24 bone classes (humerus, scapula, clavicle, sternum, vertebrae, ribs, sacrum, hip, femur) plus background — onto the [`torch-rb`](https://github.com/ankane/torch.rb) Ruby bindings to LibTorch.
+A 1:1 port of [TotalSegmentator](https://github.com/wasserth/TotalSegmentator)'s `total --fast` task — the nnU-Net 3 mm model that labels the full 117-class TotalSegmentator label set (humerus, scapula, clavicle, sternum, vertebrae C1..L5+S1, ribs 1..12 L/R, sacrum, hip, femur, plus all soft-tissue classes) — onto the [`torch-rb`](https://github.com/ankane/torch.rb) Ruby bindings to LibTorch. The bone-only subset is exposed as `Config#bone_labels` for downstream consumers that only care about the skeleton.
 
 ## Status
 
-**Phase 2 (this release): proof-of-concept**
+**Phase 3 (this release): real nnU-Net**
 
-- Gem skeleton, public API, sliding-window orchestration, label-map abstraction.
-- Round-trip pipeline: Python `torch.save` of a state-dict → Ruby `Torch.load` → Ruby `Torch::NN::Module` mirror → forward pass.
-- Ships a **proxy CNN** (two `Conv3d` layers) on both sides so the round-trip can be validated end-to-end without the 150 MB nnU-Net weights.
-- Tier A bit-equivalence spec passes: max abs diff = **2.4e-7** vs the Python reference logits, on a [25, 8, 16, 16] output tensor.
-- Tier B end-to-end spec exercises a synthetic 16×16×16 NIfTI fixture all the way through preprocessing → sliding-window inference → label map.
+- The Ruby `BonesUNet` is a parameter-for-parameter mirror of `dynamic_network_architectures.PlainConvUNet` (5 encoder stages, features [32, 64, 128, 256, 320], InstanceNorm3d + LeakyReLU(0.01), strided-conv downsampling, ConvTranspose3d upsampling).
+- All 88 canonical state-dict keys (after stripping nnU-Net's `all_modules.*` aliases and shared `decoder.encoder.*` refs) load from the real TotalSegmentator checkpoint into the Ruby module — no missing / unexpected keys, no shape mismatches.
+- Tier A spec asserts 100% argmax agreement against the Python reference on a canonical 32³ patch; logit-level max abs diff settles at ~2 e-3 from fp32 accumulation-order nondeterminism in the conv backend (Ruby and Python share the same libtorch 2.12 ABI).
+- Tier B exercises the full pipeline (CT normalization → 3 mm resample → sliding-window inference with Gaussian importance blending and reflect padding → nearest-neighbour resample back to native voxel grid → `LabelMap`) on a 16³ NIfTI fixture in ~10 s on CPU.
+- Weights ship as a GitHub release asset (`v0.0.2`). First use downloads to `~/.cache/shoulder_segmenter/`.
 
-**Phase 3 (next): real nnU-Net**
+**Phase 2 (legacy): proof-of-concept proxy CNN**
 
-- Mirror nnU-Net's actual U-Net architecture in `lib/shoulder_segmenter/nnunet.rb` so the same state-dict load path lifts the real `~/.cache/totalsegmentator` weights into Ruby.
-- Hook up the `--real` branch of `script/export_totalsegmentator.py` to pull TotalSegmentator's bones-task plans + weights and dump them to the same pickle format.
-- Spacing resample (currently a TODO in `Preprocess`) and reflection padding (currently zero-pad) to match nnU-Net's preprocessor.
+- The 2-layer Conv3d proxy still lives in `lib/shoulder_segmenter/proxy_cnn.rb` and is selected by `network_config.yaml`'s `export_kind: proxy_cnn`. Keep it for fast unit tests where the 64-MB real model is overkill.
 
 ## Install
 
@@ -40,10 +38,9 @@ volume = Nifti.load("ct_chest.nii.gz")
 seg    = ShoulderSegmenter.run(volume)
 
 seg.shape                          # => [d, h, w]
-seg.labels                         # => { 1 => "humerus_left", 2 => "scapula_left", ... }
+seg.labels                         # => { 0 => "background", 69 => "humerus_left", ... }
 seg.mask_for(:humerus_left)        # => 3-D boolean Numo::NArray
-seg.dominant_label_at(z, y, x)     # => Integer class id
-seg.to_nifti("out.nii.gz")         # Phase 3 — needs nifti-ruby writer
+seg.dominant_label_at(z, y, x)     # => Integer class id (0..117)
 ```
 
 ## How the Python ↔ Ruby model round-trip works
@@ -54,11 +51,25 @@ nnU-Net wraps a fixed-shape inner CNN with a lot of dynamic Python (per-axis res
 
 **Workaround used here:**
 
-1. Define the CNN architecture *in both Python and Ruby* (`script/export_totalsegmentator.py` and `lib/shoulder_segmenter/proxy_cnn.rb` — the Phase 2 proxy; `lib/shoulder_segmenter/nnunet.rb` will be the Phase 3 real one).
-2. In Python: build the model, then `torch._C._pickle_save(model.state_dict())` → bytes → file. This is the libtorch low-level pickler, NOT Python's `torch.save` (which wraps it in a zip/legacy container Ruby doesn't grok).
-3. In Ruby: `Torch.load(path)` returns a `Hash<String, Torch::Tensor>`. Walk it, `param.copy!(value)` into the matching `Torch::NN::Module` slots. Standard forward call from there.
+1. Define the CNN architecture *in both Python and Ruby* (`script/export_totalsegmentator.py` and `lib/shoulder_segmenter/bones_unet.rb`).
+2. In Python: load the official TotalSegmentator checkpoint into the real `dynamic_network_architectures.PlainConvUNet`, then `torch._C._pickle_save(model.state_dict())` → bytes → file (after stripping nnU-Net's `all_modules.*` parameter aliases and the duplicated `decoder.encoder.*` shared refs, leaving 88 canonical keys).
+3. In Ruby: `Torch.load(path)` returns a `Hash<String, Torch::Tensor>`. `BonesUNet#load_state_dict!` walks the dotted keys, locates the matching `Torch::NN::Parameter` slot (numeric segments index Sequential/ModuleList children; named segments are submodule attrs), and copies values in. Standard forward call from there.
 
-The Tier A spec verifies the canonical patch's output matches the Python reference within 1e-5 (actual measured diff: ~2.4e-7).
+The Tier A spec proves the resulting logits match Python's reference to argmax-exact, with max abs logit diff of ~2 e-3 (pure fp32 accumulation noise — both sides use the same libtorch 2.12).
+
+## Architecture map
+
+| File | Purpose |
+|---|---|
+| `lib/shoulder_segmenter.rb` | Public `ShoulderSegmenter.run(volume)` entrypoint |
+| `lib/shoulder_segmenter/config.rb` | Loads `network_config.yaml`: patch size, labels, norm stats, arch YAML pointer |
+| `lib/shoulder_segmenter/model.rb` | Loads pickled state-dict, instantiates `BonesUNet` (or `ProxyCNN` legacy), exposes `forward(patch)` |
+| `lib/shoulder_segmenter/bones_unet.rb` | Phase 3 Ruby mirror of nnU-Net PlainConvUNet (5 encoder stages, 4 decoder stages, ConvTranspose3d wrapped from `Torch.conv_transpose3d`) |
+| `lib/shoulder_segmenter/proxy_cnn.rb` | Phase 2 legacy: 2-layer Conv3d → ReLU → Conv3d |
+| `lib/shoulder_segmenter/preprocess.rb` | NIfTI raw bytes → Numo::SFloat → CT clip+zscore + trilinear resample to target spacing |
+| `lib/shoulder_segmenter/sliding_window.rb` | Patch extraction (reflect pad), Gaussian importance-blended logits, channel-axis argmax |
+| `lib/shoulder_segmenter/runner.rb` | Glues preprocess → sliding window → label resample → LabelMap |
+| `lib/shoulder_segmenter/label_map.rb` | Per-voxel label volume + mask/lookup helpers |
 
 ## Specs
 
@@ -66,44 +77,30 @@ The Tier A spec verifies the canonical patch's output matches the Python referen
 bundle exec rspec
 ```
 
-Tier A (canonical patch) and Tier B (end-to-end NIfTI fixture) both require the artifacts from `script/export_totalsegmentator.py`:
+All heavy specs require artifacts generated by `script/export_totalsegmentator.py`:
 
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r script/requirements.txt
-python3 script/export_totalsegmentator.py        # proxy CNN; Phase 2 default
-python3 script/export_totalsegmentator.py --real # Phase 3, NotImplementedError today
+python3 script/export_totalsegmentator.py --inspect  # real nnU-Net (downloads ~135 MB)
+python3 script/export_totalsegmentator.py --proxy    # legacy 2-layer CNN
 ```
 
 Outputs:
 
-- `script/totalsegmentator_bones_fast.pt` — pickled state-dict (gitignored; uploaded to GH releases)
+- `script/totalsegmentator_bones_fast.pt` — pickled state-dict (gitignored; uploaded to GH releases as `v0.0.2`, SHA256 in `network_config.yaml`)
 - `script/golden/network_config.yaml` — patch size, target spacing, label dict, normalization stats, model SHA256
-- `script/golden/sample_patch_in.bin` — `[D,H,W]` float32 canonical input
-- `script/golden/sample_patch_out.bin` — `[K,D,H,W]` float32 reference logits
+- `script/golden/nnunet_architecture.yaml` — full architecture spec the Ruby mirror reads
+- `script/golden/sample_patch_in.bin` — `[32, 32, 32]` float32 canonical input (32³ rather than runtime 112×112×128 to keep the GH asset small)
+- `script/golden/sample_patch_out.bin` — `[118, 32, 32, 32]` float32 Python-reference logits
 
 If the artifacts aren't present, the heavy specs skip and the cheap ones (`LabelMap`, error paths) still run.
 
-## Architecture map
+## Known gaps
 
-| File | Purpose |
-|---|---|
-| `lib/shoulder_segmenter.rb` | Public `ShoulderSegmenter.run(volume)` entrypoint |
-| `lib/shoulder_segmenter/config.rb` | Loads `network_config.yaml`: patch size, labels, norm stats |
-| `lib/shoulder_segmenter/model.rb` | Loads pickled state-dict, instantiates the Ruby mirror, exposes `forward(patch)` |
-| `lib/shoulder_segmenter/proxy_cnn.rb` | Phase 2 mirror: 2-layer Conv3d → ReLU → Conv3d |
-| `lib/shoulder_segmenter/preprocess.rb` | NIfTI raw bytes → Numo::SFloat → CT clip+zscore (TODO: spacing resample) |
-| `lib/shoulder_segmenter/sliding_window.rb` | Patch extraction + Gaussian importance-blended logits + argmax |
-| `lib/shoulder_segmenter/runner.rb` | Glues preprocess → sliding window → LabelMap |
-| `lib/shoulder_segmenter/label_map.rb` | Per-voxel label volume + mask/lookup helpers |
-
-## Known gaps (Phase 3 work)
-
-- The proxy CNN is *not* the real nnU-Net. End-to-end output is meaningless biologically; the goal of Phase 2 is just to prove the plumbing.
-- `Preprocess#resample_to_target_spacing` is not implemented; fixtures must already be at the network's target spacing.
-- `SlidingWindow#pad_to` does zero-padding; nnU-Net uses reflect padding.
-- `LabelMap#to_nifti` raises `NotImplementedError` pending nifti-ruby's writer.
+- Output classes are the full 118 — bone subsetting happens via `Config#bone_labels`. A future helper could return a `LabelMap` filtered to bones only.
+- `LabelMap#to_nifti` raises `NotImplementedError` pending `nifti-ruby`'s writer.
 - No TTA (test-time augmentation). nnU-Net's "fast" task defaults to TTA off, so this is acceptable.
 - TorchScript JIT loading from Ruby is unsupported by torch-rb. If a future torch-rb version exposes `Torch::JIT`, the architecture-mirroring approach can be retired in favor of a single `.pt` artifact.
 

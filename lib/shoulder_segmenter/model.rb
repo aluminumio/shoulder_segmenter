@@ -1,21 +1,24 @@
 # frozen_string_literal: true
 
 require_relative "proxy_cnn"
+require_relative "bones_unet"
 
 module ShoulderSegmenter
-  # Wrapper around the inner CNN. Phase 2 ships the *proxy* CNN — a tiny
-  # 2-layer Conv3d sandwich — defined in both Python (`script/export_totalsegmentator.py`)
-  # and Ruby (`proxy_cnn.rb`), with weights round-tripped via libtorch's
+  # Wrapper around the inner CNN. Phase 3 ships the real TotalSegmentator
+  # `total --fast` (task 297) nnU-Net — `dynamic_network_architectures`'s
+  # PlainConvUNet — defined in both Python (`script/export_totalsegmentator.py`)
+  # and Ruby (`bones_unet.rb`), with weights round-tripped via libtorch's
   # `torch::pickle_save` / `torch::pickle_load` (Ruby `Torch.load`).
   #
   # Input  shape: [B=1, C=1, D, H, W] float32 (D/H/W = config.patch_size)
   # Output shape: [B=1, K, D, H, W]  float32 logits (K = config.num_classes)
   #
-  # Phase 3 substitutes the real nnU-Net mirror without changing this surface.
+  # The legacy 2-layer proxy CNN (Phase 2) is still wired up behind
+  # `export_kind: proxy_cnn` for fast unit tests.
   class Model
     CACHE_DIR = File.expand_path("~/.cache/shoulder_segmenter")
 
-    attr_reader :net, :config, :path
+    attr_reader :net, :config, :path, :state_dict
 
     def self.load_default(config: Config.load)
       load(default_path(config), config: config)
@@ -42,6 +45,7 @@ module ShoulderSegmenter
       end
 
       net = build_network(config).tap { |n| n.load_state_dict!(state_dict) }
+      net.eval
       new(net: net, config: config, path: path, state_dict: state_dict)
     rescue LoadError => e
       raise ModelLoadError, "torch-rb not installed (#{e.message}). See README install instructions."
@@ -51,14 +55,23 @@ module ShoulderSegmenter
       case config.raw["export_kind"]
       when "proxy_cnn"
         ProxyCNN.new(num_classes: config.num_classes)
+      when "nnunet_plain_conv_unet"
+        BonesUNet.from_config(load_arch_yaml(config))
       else
         raise ModelLoadError,
-              "unknown export_kind=#{config.raw['export_kind'].inspect}. " \
-              "Phase 2 only ships 'proxy_cnn'; the real nnU-Net mirror is Phase 3."
+              "unknown export_kind=#{config.raw['export_kind'].inspect}; " \
+              "expected 'nnunet_plain_conv_unet' (real model) or 'proxy_cnn' (legacy)."
       end
     end
 
-    attr_reader :state_dict
+    def self.load_arch_yaml(config)
+      arch_path = config.arch_yaml_path
+      raise ModelLoadError, "missing #{arch_path} (run script/export_totalsegmentator.py --inspect)" \
+        unless File.exist?(arch_path)
+
+      require "yaml"
+      YAML.safe_load_file(arch_path)
+    end
 
     def initialize(net:, config:, path:, state_dict:)
       @net        = net
@@ -80,7 +93,7 @@ module ShoulderSegmenter
         else
           Torch.from_numo(patch).unsqueeze(0).unsqueeze(0)
         end
-      net.forward(tensor)
+      Torch.no_grad { net.forward(tensor) }
     end
   end
 end
