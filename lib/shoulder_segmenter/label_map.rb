@@ -45,9 +45,13 @@ module ShoulderSegmenter
     # boundaries.
     NIFTI_INTENT_LABEL = 1002
 
+    # @data is laid out [D, H, W] (z, y, x) to match the torch NCDHW
+    # convention used during inference. NIfTI on-disk expects [x, y, z], so
+    # transpose before writing. affine and voxel_size are already in (x, y, z)
+    # — they were preserved from the input Nifti::Volume.
     def to_nifti(path)
       Nifti.write(
-        data,
+        data.transpose(2, 1, 0).dup,
         path,
         affine:      affine || default_affine,
         voxel_size:  voxel_size,

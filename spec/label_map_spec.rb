@@ -48,11 +48,27 @@ RSpec.describe ShoulderSegmenter::LabelMap do
         round = Nifti.load(path)
         expect(round.shape).to eq([2, 2, 2])
         expect(round.dtype).to eq(:uint8)
-        # nifti-ruby writes Fortran order, reads back flat; compare against the
-        # equivalent Fortran-order flatten of the input.
-        expect(round.to_a).to eq(data.transpose(2, 1, 0).flatten.to_a)
+        # Round-trip: data is [D,H,W], we transpose to [W,H,X] before write,
+        # so the on-disk x-first order matches the original C-order layout
+        # voxel-for-voxel.
+        expect(round.to_a).to eq(data.flatten.to_a)
         expect(round.header[:intent_code]).to eq(described_class::NIFTI_INTENT_LABEL)
         expect(round.header[:intent_name]).to start_with("label_map")
+      end
+    end
+
+    it "writes shape in (x, y, z) order matching the affine's axes" do
+      Dir.mktmpdir do |dir|
+        # Asymmetric shape proves axis order is preserved end-to-end.
+        asym  = Numo::UInt8.new(2, 3, 4).seq
+        lm    = described_class.new(data: asym, labels: labels,
+                                    voxel_size: [0.5, 1.0, 2.0])  # (x, y, z)
+        lm.to_nifti(File.join(dir, "labels.nii.gz"))
+
+        round = Nifti.load(File.join(dir, "labels.nii.gz"))
+        # asym is [D=2, H=3, W=4] in (z, y, x); on disk should be [W=4, H=3, D=2].
+        expect(round.shape).to eq([4, 3, 2])
+        expect(round.voxel_size).to eq([0.5, 1.0, 2.0])
       end
     end
 
