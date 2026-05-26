@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "numo/narray"
+require "nifti"
+require "tmpdir"
 
 RSpec.describe ShoulderSegmenter::LabelMap do
   let(:labels) { { 0 => "background", 1 => "humerus_left", 2 => "scapula_left" } }
@@ -27,5 +29,57 @@ RSpec.describe ShoulderSegmenter::LabelMap do
   it "rejects non-3D arrays" do
     expect { described_class.new(data: Numo::UInt8[1, 2, 3], labels: labels) }
       .to raise_error(ArgumentError, /3-D/)
+  end
+
+  describe "#to_nifti" do
+    # Distinct values per voxel so we'd catch any axis-ordering bug.
+    let(:data) do
+      Numo::UInt8[
+        [[1, 2], [3, 4]],
+        [[5, 6], [7, 8]]
+      ]
+    end
+
+    it "writes a label-map NIfTI that round-trips through Nifti.load" do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "labels.nii.gz")
+        lmap.to_nifti(path)
+
+        round = Nifti.load(path)
+        expect(round.shape).to eq([2, 2, 2])
+        expect(round.dtype).to eq(:uint8)
+        # nifti-ruby writes Fortran order, reads back flat; compare against the
+        # equivalent Fortran-order flatten of the input.
+        expect(round.to_a).to eq(data.transpose(2, 1, 0).flatten.to_a)
+        expect(round.header[:intent_code]).to eq(described_class::NIFTI_INTENT_LABEL)
+        expect(round.header[:intent_name]).to start_with("label_map")
+      end
+    end
+
+    it "uses the provided affine when one is set" do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "labels.nii.gz")
+        affine = [
+          [1.5, 0.0, 0.0, 10.0],
+          [0.0, 1.5, 0.0, 20.0],
+          [0.0, 0.0, 1.5, 30.0],
+          [0.0, 0.0, 0.0,  1.0]
+        ]
+        described_class.new(data: data, labels: labels, affine: affine).to_nifti(path)
+
+        round = Nifti.load(path)
+        expect(round.voxel_size).to eq([1.5, 1.5, 1.5])
+      end
+    end
+
+    it "falls back to a voxel-size-scaled identity affine when none is provided" do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "labels.nii.gz")
+        described_class.new(data: data, labels: labels, voxel_size: [2.0, 3.0, 4.0]).to_nifti(path)
+
+        round = Nifti.load(path)
+        expect(round.voxel_size).to eq([2.0, 3.0, 4.0])
+      end
+    end
   end
 end

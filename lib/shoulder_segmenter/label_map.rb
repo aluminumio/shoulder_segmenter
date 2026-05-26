@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "numo/narray"
+require "nifti"
 
 module ShoulderSegmenter
   # Per-voxel label volume.
@@ -39,12 +40,35 @@ module ShoulderSegmenter
       labels.invert.fetch(name.to_s)
     end
 
-    # TODO Phase 3: real NIfTI writer (likely via nifti-ruby once writer lands).
-    def to_nifti(_path)
-      raise NotImplementedError, "to_nifti pending nifti-ruby writer support (Phase 3)"
+    # NIFTI_INTENT_LABEL — labels the volume as a discrete label map so other
+    # tools (3D Slicer, FreeSurfer, etc.) don't interpolate values across class
+    # boundaries.
+    NIFTI_INTENT_LABEL = 1002
+
+    def to_nifti(path)
+      Nifti.write(
+        data,
+        path,
+        affine:      affine || default_affine,
+        voxel_size:  voxel_size,
+        intent_code: NIFTI_INTENT_LABEL,
+        intent_name: "label_map"
+      )
     end
 
     private
+
+    # Identity affine scaled by voxel_size when no affine was provided
+    # (consumer didn't carry physical-space info through the pipeline).
+    def default_affine
+      sx, sy, sz = voxel_size || [1.0, 1.0, 1.0]
+      [
+        [sx, 0.0, 0.0, 0.0],
+        [0.0, sy, 0.0, 0.0],
+        [0.0, 0.0, sz, 0.0],
+        [0.0, 0.0, 0.0, 1.0]
+      ]
+    end
 
     def resolve_id(label)
       case label
