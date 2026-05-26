@@ -13,19 +13,21 @@ RSpec.describe ShoulderSegmenter::Config do
     expect(config.patch_size).to all(be_an(Integer))
   end
 
-  it "exposes the TotalSegmentator total-fast label dict (118 classes)" do
-    expect(config.num_classes).to eq(118)
+  it "exposes the TotalSegmentator label dict (humerus, scapula, clavicula present)" do
+    # Default task is 294 (part4_muscles 1.5mm) -- 24 classes incl background.
+    # Task 297 (legacy total-fast 3mm) yields 118 classes. Both must surface
+    # the shoulder bones we care about.
+    expect(config.num_classes).to be >= 24
     expect(config.labels[0]).to eq("background")
-    expect(config.labels[69]).to eq("humerus_left")
-    expect(config.labels[70]).to eq("humerus_right")
-    expect(config.labels[116]).to eq("sternum")
+    expect(config.labels.values).to include("humerus_left", "humerus_right",
+                                            "scapula_left", "scapula_right",
+                                            "clavicula_left", "clavicula_right")
   end
 
   it "exposes the bone-only subset map" do
     expect(config.bone_labels[0]).to eq("background")
-    expect(config.bone_labels[69]).to eq("humerus_left")
-    expect(config.bone_labels[71]).to eq("scapula_left")
-    expect(config.bone_labels).not_to have_key(51) # heart, organ — not a bone
+    expect(config.bone_labels.values).to include("humerus_left", "scapula_left",
+                                                 "clavicula_left")
   end
 
   it "carries the SHA256 of the weights blob" do

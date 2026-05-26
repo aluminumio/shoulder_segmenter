@@ -42,15 +42,18 @@ RSpec.describe ShoulderSegmenter::Model do
     end
 
     it "loads the full nnU-Net state_dict into the Ruby mirror" do
-      # 88 canonical parameters: 5 encoder stages × 2 convs × {conv,norm} × {weight,bias}
-      # = 40, plus 4 decoder stages × 2 × 4 = 32, plus 4 transpconvs × 2 = 8,
-      # plus 4 seg_layers × 2 = 8 → 88.
-      expect(model.state_dict.size).to eq(88)
+      # Canonical parameter count depends on n_stages:
+      #   5 stages: 5*2*4 + 4*2*4 + 4*2 + 4*2 = 40+32+8+8 = 88
+      #   6 stages: 6*2*4 + 5*2*4 + 5*2 + 5*2 = 48+40+10+10 = 108
+      arch_yaml = YAML.safe_load_file(golden("nnunet_architecture.yaml"))
+      n_stages = arch_yaml.fetch("n_stages")
+      expected_keys = n_stages * 2 * 4 + (n_stages - 1) * 2 * 4 + (n_stages - 1) * 2 * 2
+      expect(model.state_dict.size).to eq(expected_keys)
       expect(model.state_dict.keys).to include(
         "encoder.stages.0.0.convs.0.conv.weight",
-        "encoder.stages.4.0.convs.1.norm.bias",
+        "encoder.stages.#{n_stages - 1}.0.convs.1.norm.bias",
         "decoder.transpconvs.0.weight",
-        "decoder.seg_layers.3.weight"
+        "decoder.seg_layers.#{n_stages - 2}.weight"
       )
     end
 
