@@ -23,7 +23,7 @@ module SpecPaths
   end
 
   def model_weights_path
-    ENV["SHOULDER_SEGMENTER_MODEL"] || File.join(SCRIPT, "totalsegmentator_bones_fast.pt")
+    ENV["SHOULDER_SEGMENTER_MODEL"] || File.join(SCRIPT, "totalsegmentator_part4_muscles.pt")
   end
 
   def golden_artifacts_available?
